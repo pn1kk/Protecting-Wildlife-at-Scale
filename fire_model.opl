@@ -1,0 +1,136 @@
+int N = 15;
+range Z = 1..N;
+
+// ----------------- PARAMETERS -----------------
+
+// Park geometry
+float area[Z] = [
+1408,3219,1207,1811,2213,
+2011,2625,905,2715,4325,
+1609,1710,2011,1257,1106
+];
+
+// Road network (affects patrol effectiveness)
+float road[Z] = [
+0.9,0.7,0,0.3,0,
+0.6,0,0.5,0.8,0,
+0.75,0,0,0.8,0.6
+];
+
+// Fire risk parameters
+float rain[Z] = [
+0.2,0.1,0.3,0.1,0.2,
+0.25,0.15,0.05,0.2,0.1,
+0.15,0.2,0.1,0.1,0.05
+];
+
+float fire_accidents[Z] = [
+2,1,0,3,1,
+2,1,0,2,0,
+1,2,0,1,0
+];
+
+// Pre-existing patrol allocation for fire detection
+int const_patrols[Z] = [7, 7, 0, 0, 0, 7, 1, 4, 10, 0, 5, 1, 0, 11, 7];
+
+// Pre-existing drone allocation for fire detection
+int const_drones[Z] = [7, 22, 6, 0, 0, 13, 0, 3, 16, 0, 10, 13, 0, 4, 6];
+
+// Adjacency matrix
+int neigh[Z][Z] = [
+  [0,1,1,1,0,0,0,0,0,0,0,0,0,0,0],
+  [1,0,0,0,1,0,0,0,0,0,0,0,0,0,0],
+  [1,0,0,1,0,1,0,0,0,0,0,0,0,0,0],
+  [1,0,1,0,1,1,1,0,0,0,0,0,0,0,0],
+  [0,1,0,1,0,0,0,1,1,0,0,0,0,0,0],
+  [0,0,1,1,0,0,1,0,1,1,0,0,0,0,0],
+  [0,0,0,1,0,1,0,1,0,0,1,1,0,0,0],
+  [0,0,0,0,1,0,1,0,0,1,0,0,0,0,0],
+  [0,0,0,0,1,1,0,0,0,1,1,0,0,1,1],
+  [0,0,0,0,0,1,0,1,1,0,0,1,0,1,0],
+  [0,0,0,0,0,0,1,0,1,0,0,0,1,0,0],
+  [0,0,0,0,0,0,1,0,0,1,0,0,0,1,0],
+  [0,0,0,0,0,0,0,0,0,0,1,0,0,0,1],
+  [0,0,0,0,0,0,0,0,1,1,0,1,0,0,1],
+  [0,0,0,0,0,0,0,0,1,0,0,0,1,1,0]
+];
+
+// Technology parameters
+float patrol_range = 80;
+float drone_range = 128;
+
+// Max operational limits
+int max_fire_unit = 1;
+int max_drones = 60;
+int maxDronesPerZone = 12;
+
+// ----------------- DERIVED SPATIAL PARAMETERS -----------------
+int nbNeigh[i in Z] = sum(j in Z) neigh[i][j];
+float alpha[i in Z] = (nbNeigh[i] > 0) ? 1.0 / nbNeigh[i] : 0;
+
+// ----------------- DECISION VARIABLES -----------------
+dvar int+ fire_unit[Z] in 0..1;
+dvar int+ fire_drones[Z] in 0..50;
+
+// Access and coverage variables
+dvar float fire_unit_access[Z] in 0..1;
+dvar float zone_fire_access[Z] in 0..1;
+dvar float const_drone_coverage[Z] in 0..1e6;
+dvar float const_patrol_coverage[Z] in 0..1e6;
+dvar float adj_drone_coverage[Z] in 0..1e6;
+dvar float zone_fire_detection[Z] in 0..1;
+dvar float fire_prevent_zone[Z] in 0..1;
+
+// ----------------- OBJECTIVE -----------------
+minimize
+  sum(i in Z)
+     (1 - rain[i]) * fire_accidents[i] * (1 - fire_prevent_zone[i]) * area[i];
+
+// ----------------- CONSTRAINTS -----------------
+subject to {
+
+  // ---- Total resources ----
+  sum(i in Z) fire_unit[i] <= max_fire_unit;
+  sum(i in Z) fire_drones[i] <= max_drones;
+
+  // ---- Maximum drones per zone ----
+  forall(i in Z)
+      fire_drones[i] <= maxDronesPerZone;
+
+  // ---- Fire unit access with neighbor spillover ----
+  forall(i in Z){
+     fire_unit_access[i] <= fire_unit[i] + sum(j in Z:neigh[i][j]==1) alpha[i]*fire_unit[j];
+     fire_unit_access[i] >= fire_unit[i];   // ensures >=1 if fire_unit=1
+  }
+
+  // ---- Zone fire access ----
+  forall(i in Z){
+     zone_fire_access[i] == 0.5 + 0.5 * fire_unit_access[i];
+  }
+
+  // ---- Constant coverage from pre-existing resources ----
+  forall(i in Z){
+     const_drone_coverage[i] == drone_range * const_drones[i];
+     const_patrol_coverage[i] == road[i] * patrol_range * const_patrols[i];
+  }
+
+  // ---- Coverage from newly allocated drones ----
+  forall(i in Z){
+     adj_drone_coverage[i] == drone_range * fire_drones[i];
+  }
+
+  // ---- Zone fire detection with linear upper bound (replaces min()) ----
+  forall(i in Z){
+     zone_fire_detection[i] <= adj_drone_coverage[i] + const_drone_coverage[i] + const_patrol_coverage[i];
+     zone_fire_detection[i] <= 1;
+     zone_fire_detection[i] >= 0;
+  }
+
+  // ---- Fire prevention (McCormick linearization) ----
+  forall(i in Z){
+     fire_prevent_zone[i] <= zone_fire_detection[i];
+     fire_prevent_zone[i] <= zone_fire_access[i];
+     fire_prevent_zone[i] >= zone_fire_detection[i] + zone_fire_access[i] - 1;
+  }
+
+}
