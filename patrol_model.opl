@@ -1,0 +1,150 @@
+int N = 15;
+range Z = 1..N;
+
+// ----------------- PARAMETERS -----------------
+float area[Z] = [
+1408,3219,1207,1811,2213,
+2011,2625,905,2715,4325,
+1609,1710,2011,1257,1106
+];
+
+float road[Z] = [
+0.9,0.7,0,0.3,0,
+0.6,0,0.5,0.8,0,
+0.75,0,0,0.8,0.6
+];
+
+float water[Z] = [
+0.7,0.5,0,0.2,0,
+0.3,0,0.1,0.9,0,
+0.8,0,0,0.7,0.5
+];
+
+float rhino[Z] = [
+2,2,1,0,0,
+2,0,0,2,0,
+2,2,0,2,2
+];
+
+int animal[Z] = [
+2,2,1,1,0,
+2,0,2,2,0,
+2,2,0,2,2
+];
+
+int maincamp[Z] = [
+1,1,0,0,0,
+0,0,0,1,0,
+1,0,0,1,1
+];
+
+// ---------- ADJACENCY MATRIX ----------
+int neigh[Z][Z] = [
+  [0,1,1,1,0,0,0,0,0,0,0,0,0,0,0],
+  [1,0,0,0,1,0,0,0,0,0,0,0,0,0,0],
+  [1,0,0,1,0,1,0,0,0,0,0,0,0,0,0],
+  [1,0,1,0,1,1,1,0,0,0,0,0,0,0,0],
+  [0,1,0,1,0,0,0,1,1,0,0,0,0,0,0],
+  [0,0,1,1,0,0,1,0,1,1,0,0,0,0,0],
+  [0,0,0,1,0,1,0,1,0,0,1,1,0,0,0],
+  [0,0,0,0,1,0,1,0,0,1,0,0,0,0,0],
+  [0,0,0,0,1,1,0,0,0,1,1,0,0,1,1],
+  [0,0,0,0,0,1,0,1,1,0,0,1,0,1,0],
+  [0,0,0,0,0,0,1,0,1,0,0,0,1,0,0],
+  [0,0,0,0,0,0,1,0,0,1,0,0,0,1,0],
+  [0,0,0,0,0,0,0,0,0,0,1,0,0,0,1],
+  [0,0,0,0,0,0,0,0,1,1,0,1,0,0,1],
+  [0,0,0,0,0,0,0,0,1,0,0,0,1,1,0]
+];
+
+// ----------------- TECHNOLOGY PARAMETERS -----------------
+float patrolRange = 80;
+float droneRange = 128;
+
+// linear diminishing returns
+float beta1 = 0.6;
+float beta2 = 0.3;
+float cp = 0.5;
+
+// wildlife weights
+float W1 = 1;
+float W2 = 3;
+float W3 = 0.9;
+
+// operational cap
+int maxPatrolPerZone = 11;
+
+// ----------------- DERIVED SPATIAL PARAMETERS -----------------
+
+// number of neighbours per zone
+int nbNeigh[i in Z] = sum(j in Z) neigh[i][j];
+
+// zone-specific spillover weight
+float alpha[i in Z] =
+   (nbNeigh[i] > 0) ? 1.0 / nbNeigh[i] : 0;
+
+// ----------------- DERIVED POACHING RISK -----------------
+float poachRisk[i in Z] =
+   (W2 * rhino[i] + W1 * animal[i])
+   * (road[i] + 1)
+   * (water[i] + 1)
+   * (2 - W3 * maincamp[i]);
+
+// ----------------- DECISION VARIABLES -----------------
+dvar int+ P[Z];
+dvar int+ D[Z];
+
+dvar float Coverage[Z] in 0..1;
+dvar float Det[Z] in 0..1;
+dvar float Access[Z] in 0..1;
+dvar float Prevent[Z] in 0..1;
+
+// ----------------- OBJECTIVE -----------------
+minimize
+   sum(i in Z)
+      poachRisk[i] * (1 - Prevent[i]) * area[i];
+
+// ----------------- CONSTRAINTS -----------------
+subject to {
+
+   // ---- Resource totals ----
+   sum(i in Z) P[i] == 60;
+   sum(i in Z) D[i] == 100;
+
+   // ---- Operational realism ----
+   forall(i in Z)
+      P[i] <= maxPatrolPerZone;
+
+   // ---- Effective coverage ----
+   forall(i in Z) {
+      Coverage[i] == (patrolRange * road[i] * P[i]
+                     + droneRange * D[i]) / area[i];
+      Coverage[i] <= 1;
+      Coverage[i] >= 0;
+   }
+
+   // ---- Linear concave detection ----
+   forall(i in Z) {
+      Det[i] <= beta1 * Coverage[i];
+      Det[i] <= beta1*cp + beta2*(Coverage[i]-cp);
+      Det[i] <= 1;
+   }
+
+   // ---- Continuous access with normalized spatial spillover ----
+   forall(i in Z){
+      Access[i] <= P[i] / maxPatrolPerZone
+                 + alpha[i] *
+                   sum(j in Z : neigh[i][j] == 1)
+                      P[j] / maxPatrolPerZone;
+
+      Access[i] <= 1;
+      Access[i] >= 0;
+   }
+
+   // ---- Prevention interaction (McCormick linearization) ----
+   forall(i in Z){
+      Prevent[i] <= Det[i];
+      Prevent[i] <= Access[i];
+      Prevent[i] >= Det[i] + Access[i] - 1;
+   }
+}
